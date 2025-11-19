@@ -412,6 +412,13 @@ jobs:
             echo "✅ LLM analysis completed successfully!"
             echo "$BODY" | jq '.'
             
+            # Extract S3 path
+            S3_PATH=$(echo "$BODY" | jq -r '.s3_path // empty')
+            if [ -n "$S3_PATH" ]; then
+              echo ""
+              echo "📊 Dev Intelligence Metrics stored at: $S3_PATH"
+            fi
+            
             # Extract analysis text
             ANALYSIS=$(echo "$BODY" | jq -r '.analysis // .result // empty')
             if [ -n "$ANALYSIS" ]; then
