@@ -97,8 +97,14 @@ Your Repo → Actions → SAInapse Unit Tests
 
 ### SAInapse Dashboard
 ```
-https://sainapse.com/projects/ALP/quality/tests
+https://sainapse.com/projects/ALP/quality
 ```
+
+### S3 Data Path
+```
+s3://sainapse-lake/projects/alp/qn/2025/11/19/pr-42-20251119123456.json
+```
+(Or `pr-5234-...json` if no PR number - uses branch name hash)
 
 ### Expected Data in SAInapse
 ```json

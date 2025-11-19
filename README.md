@@ -67,7 +67,13 @@ After each test run, results are automatically uploaded to SAInapse and linked t
 
 View your test results in the SAInapse dashboard:
 ```
-https://sainapse.com/projects/ALP/quality/tests
+https://sainapse.com/projects/ALP/quality
+```
+
+**S3 Storage Path:**
+```
+s3://sainapse-lake/projects/alp/qn/2025/11/19/pr-42-20251119123456.json
+# Or without PR: pr-5234-20251119123456.json (branch hash)
 ```
 
 ## 🧪 Test Coverage
