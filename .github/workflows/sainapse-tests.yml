@@ -205,7 +205,7 @@ jobs:
           echo "📦 Building comprehensive test results payload..."
           
           # Build comprehensive test results with all quality metrics
-          TEST_RESULTS=$(jq -n \
+          jq -n \
             --arg total "${{ steps.metrics.outputs.total_tests }}" \
             --arg passed "${{ steps.metrics.outputs.passed }}" \
             --arg failed "${{ steps.metrics.outputs.failed }}" \
@@ -251,23 +251,27 @@ jobs:
                 pylint_score: ($pylint | tonumber),
                 overall_rating: ($rating | tonumber)
               }
-            }')
+            }' > test-results-payload.json
           
-          echo "payload<<EOF" >> $GITHUB_OUTPUT
-          echo "$TEST_RESULTS" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # Store in output as single line
+          echo "payload=$(cat test-results-payload.json | jq -c)" >> $GITHUB_OUTPUT
       
       - name: Upload to SAInapse QA Nexus
         if: always()
         run: |
+          echo "📤 Uploading comprehensive results to SAInapse QA Nexus..."
+          
+          # Read the payload from file and build full request
+          TEST_RESULTS=$(cat test-results-payload.json)
+          
           # Build full payload for QA Nexus
-          PAYLOAD=$(jq -n \
+          jq -n \
             --arg project_id "$SAINAPSE_PROJECT_ID" \
             --arg repo "${{ github.repository }}" \
             --arg branch "${{ github.ref_name }}" \
             --arg pr "${{ github.event.pull_request.number }}" \
             --arg sha "${{ github.sha }}" \
-            --argjson results '${{ steps.build_payload.outputs.payload }}' \
+            --argjson results "$TEST_RESULTS" \
             '{
               project_id: $project_id,
               repository: $repo,
@@ -276,23 +280,22 @@ jobs:
               commit_sha: $sha,
               test_results_file: ($results | tostring),
               test_format: "pytest-comprehensive"
-            }')
+            }' > sainapse-payload.json
           
-          echo "📤 Uploading comprehensive results to SAInapse QA Nexus..."
-          
+          # Upload to SAInapse
           RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
             "$SAINAPSE_API_URL/api/qa-nexus/test-results/upload" \
             -H "Content-Type: application/json" \
-            -d "$PAYLOAD")
+            -d @sainapse-payload.json)
           
           HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
           BODY=$(echo "$RESPONSE" | head -n-1)
           
           if [ "$HTTP_CODE" -eq 200 ]; then
             echo "✅ Results uploaded to QA Nexus successfully!"
-            echo "$BODY" | jq '.'
+            echo "$BODY" | jq '.' || echo "$BODY"
             
-            DASHBOARD_URL=$(echo "$BODY" | jq -r '.dashboard_url // empty')
+            DASHBOARD_URL=$(echo "$BODY" | jq -r '.dashboard_url // empty' 2>/dev/null || echo "")
             if [ -n "$DASHBOARD_URL" ]; then
               echo "📊 QA Nexus Dashboard: $DASHBOARD_URL"
             fi
