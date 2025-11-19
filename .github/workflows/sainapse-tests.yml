@@ -324,13 +324,20 @@ jobs:
         run: |
           echo "🤖 Requesting LLM-enhanced analysis from Dev Intelligence..."
           
-          # Extract issue key if available
+          # Extract issue key if available, otherwise generate one
           BRANCH_NAME="${{ github.head_ref || github.ref_name }}"
           ISSUE_KEY=$(echo "$BRANCH_NAME" | grep -oE '([A-Z]+-[0-9]+)' | head -1)
           
           if [ -z "$ISSUE_KEY" ]; then
-            echo "⚠️  No JIRA issue key found in branch name, skipping LLM analysis"
-            exit 0
+            # Generate issue key from PR number or timestamp
+            if [ -n "${{ github.event.pull_request.number }}" ]; then
+              ISSUE_KEY="GH-${{ github.event.pull_request.number }}"
+            else
+              ISSUE_KEY="TEST-$(date +%s)"
+            fi
+            echo "ℹ️  No JIRA issue key found, using: $ISSUE_KEY"
+          else
+            echo "✅ Found JIRA issue key: $ISSUE_KEY"
           fi
           
           # Read metrics for prompt
@@ -347,7 +354,7 @@ jobs:
           
           # Build custom analysis prompt
           cat > analysis-prompt.txt <<EOF
-          Analyze the following comprehensive test and code quality results for issue $ISSUE_KEY:
+          Analyze the following comprehensive test and code quality results:
           
           **Test Results:**
           - Total Tests: ${TOTAL_TESTS}
@@ -375,22 +382,25 @@ jobs:
           
           # Build agent request payload
           jq -n \
+            --arg project_id "$SAINAPSE_PROJECT_ID" \
             --arg issue_key "$ISSUE_KEY" \
             --arg repo "${{ github.repository }}" \
             --arg branch "$BRANCH_NAME" \
             --arg commit "${{ github.sha }}" \
+            --arg pr "${{ github.event.pull_request.number }}" \
             --rawfile prompt analysis-prompt.txt \
             --slurpfile test_data test-results-payload.json \
             '{
+              project_id: $project_id,
               issue_key: $issue_key,
               repository: $repo,
               branch: $branch,
               commit_sha: $commit,
+              pr_number: (if $pr != "" then ($pr | tonumber) else null end),
               prompt_override: $prompt,
               context: {
                 test_results: $test_data[0],
-                source: "github-actions",
-                pr_number: "${{ github.event.pull_request.number }}"
+                source: "github-actions"
               }
             }' > agent-request.json
           
