@@ -311,9 +311,120 @@ jobs:
             DASHBOARD_URL=$(echo "$BODY" | jq -r '.dashboard_url // empty' 2>/dev/null || echo "")
             if [ -n "$DASHBOARD_URL" ]; then
               echo "📊 QA Nexus Dashboard: $DASHBOARD_URL"
+              echo "dashboard_url=$DASHBOARD_URL" >> $GITHUB_OUTPUT
             fi
           else
             echo "⚠️  Failed to upload to QA Nexus (HTTP $HTTP_CODE)"
+            echo "$BODY"
+          fi
+      
+      - name: Enhanced LLM Analysis via Dev Intelligence
+        id: llm_analysis
+        if: always()
+        run: |
+          echo "🤖 Requesting LLM-enhanced analysis from Dev Intelligence..."
+          
+          # Extract issue key if available
+          BRANCH_NAME="${{ github.head_ref || github.ref_name }}"
+          ISSUE_KEY=$(echo "$BRANCH_NAME" | grep -oE '([A-Z]+-[0-9]+)' | head -1)
+          
+          if [ -z "$ISSUE_KEY" ]; then
+            echo "⚠️  No JIRA issue key found in branch name, skipping LLM analysis"
+            exit 0
+          fi
+          
+          # Read metrics for prompt
+          TOTAL_TESTS="${{ steps.metrics.outputs.total_tests }}"
+          PASSED_TESTS="${{ steps.metrics.outputs.passed }}"
+          FAILED_TESTS="${{ steps.metrics.outputs.failed }}"
+          COVERAGE="${{ steps.metrics.outputs.coverage }}"
+          MAINTAINABILITY="${{ steps.metrics.outputs.maintainability_index }}"
+          COMPLEXITY="${{ steps.metrics.outputs.avg_complexity }}"
+          SECURITY_HIGH="${{ steps.metrics.outputs.security_high }}"
+          SECURITY_MEDIUM="${{ steps.metrics.outputs.security_medium }}"
+          PYLINT_SCORE="${{ steps.metrics.outputs.pylint_score }}"
+          QUALITY_RATING="${{ steps.metrics.outputs.quality_rating }}"
+          
+          # Build custom analysis prompt
+          cat > analysis-prompt.txt <<EOF
+          Analyze the following comprehensive test and code quality results for issue $ISSUE_KEY:
+          
+          **Test Results:**
+          - Total Tests: ${TOTAL_TESTS}
+          - Passed: ${PASSED_TESTS}
+          - Failed: ${FAILED_TESTS}
+          - Success Rate: $(echo "scale=1; ${PASSED_TESTS}*100/${TOTAL_TESTS:-1}" | bc)%
+          - Coverage: ${COVERAGE}%
+          
+          **Code Quality Metrics:**
+          - Maintainability Index: ${MAINTAINABILITY}/100
+          - Cyclomatic Complexity: ${COMPLEXITY}
+          - Security Issues: ${SECURITY_HIGH} high, ${SECURITY_MEDIUM} medium
+          - Pylint Score: ${PYLINT_SCORE}/10
+          - Overall Quality Rating: ${QUALITY_RATING}/100
+          
+          **Your Task:**
+          Provide a concise, actionable analysis (max 3-4 paragraphs) covering:
+          1. **Overall Assessment**: Is this code production-ready? What's the risk level?
+          2. **Critical Issues**: Highlight the 2-3 most important problems (if any)
+          3. **Recommended Actions**: Specific steps to improve quality (prioritized)
+          4. **Positive Aspects**: What's working well that should be maintained
+          
+          Be direct, specific, and developer-friendly. Focus on actionable insights, not generic advice.
+          EOF
+          
+          # Build agent request payload
+          jq -n \
+            --arg issue_key "$ISSUE_KEY" \
+            --arg repo "${{ github.repository }}" \
+            --arg branch "$BRANCH_NAME" \
+            --arg commit "${{ github.sha }}" \
+            --rawfile prompt analysis-prompt.txt \
+            --slurpfile test_data test-results-payload.json \
+            '{
+              issue_key: $issue_key,
+              repository: $repo,
+              branch: $branch,
+              commit_sha: $commit,
+              prompt_override: $prompt,
+              context: {
+                test_results: $test_data[0],
+                source: "github-actions",
+                pr_number: "${{ github.event.pull_request.number }}"
+              }
+            }' > agent-request.json
+          
+          echo "📋 Agent Request:"
+          cat agent-request.json | jq '.'
+          
+          # Call Dev Intelligence Agent
+          echo ""
+          echo "📡 Calling Dev Intelligence Agent..."
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "$SAINAPSE_API_URL/api/dev-intelligence/agent/run" \
+            -H "Content-Type: application/json" \
+            -d @agent-request.json)
+          
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n-1)
+          
+          if [ "$HTTP_CODE" -eq 200 ]; then
+            echo "✅ LLM analysis completed successfully!"
+            echo "$BODY" | jq '.'
+            
+            # Extract analysis text
+            ANALYSIS=$(echo "$BODY" | jq -r '.analysis // .result // empty')
+            if [ -n "$ANALYSIS" ]; then
+              echo "llm_analysis<<EOF" >> $GITHUB_OUTPUT
+              echo "$ANALYSIS" >> $GITHUB_OUTPUT
+              echo "EOF" >> $GITHUB_OUTPUT
+              
+              echo ""
+              echo "🤖 LLM Analysis:"
+              echo "$ANALYSIS"
+            fi
+          else
+            echo "⚠️  Failed to get LLM analysis (HTTP $HTTP_CODE)"
             echo "$BODY"
           fi
       
@@ -325,7 +436,8 @@ jobs:
             const rating = parseFloat('${{ steps.metrics.outputs.quality_rating }}');
             const emoji = rating >= 90 ? '🟢' : rating >= 75 ? '🟡' : '🔴';
             
-            const body = `## ${emoji} SAInapse Quality Analysis Results
+            // Build metrics table
+            let body = `## ${emoji} SAInapse Quality Analysis Results
             
             ### 📊 Overall Rating: **${rating.toFixed(1)}/100**
             
@@ -337,11 +449,18 @@ jobs:
             | 🔄 Complexity | ${{ steps.metrics.outputs.avg_complexity }} | ${{ steps.metrics.outputs.avg_complexity <= 5 && '✅' || steps.metrics.outputs.avg_complexity <= 10 && '⚠️' || '❌' }} |
             | 🔒 Security | ${{ steps.metrics.outputs.security_issues }} issues | ${{ steps.metrics.outputs.security_high == '0' && '✅' || '❌' }} |
             | ✨ Code Style | ${{ steps.metrics.outputs.pylint_score }}/10 | ${{ steps.metrics.outputs.pylint_score >= 8 && '✅' || steps.metrics.outputs.pylint_score >= 6 && '⚠️' || '❌' }} |
-            
-            🔗 [View detailed results in SAInapse Dashboard →](https://sainapse.com/projects/${{ env.SAINAPSE_PROJECT_ID }}/quality)
             `;
             
-            github.rest.issues.createComment({
+            // Add LLM analysis if available
+            const llmAnalysis = `${{ steps.llm_analysis.outputs.llm_analysis }}`;
+            if (llmAnalysis && llmAnalysis.trim() !== '') {
+              body += `\n\n---\n\n### 🤖 AI-Enhanced Analysis\n\n${llmAnalysis}\n`;
+            }
+            
+            // Add dashboard link
+            body += `\n\n---\n\n🔗 [View detailed results in SAInapse Dashboard →](https://sainapse.com/projects/${{ env.SAINAPSE_PROJECT_ID }}/quality)\n`;
+            
+            await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,

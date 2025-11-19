@@ -43,10 +43,12 @@ This project automatically runs tests and uploads results to SAInapse on every p
 The workflow (`sainapse-tests.yml`) does the following:
 
 1. **Setup**: Checkout code, install Python 3.11, install dependencies
-2. **Test**: Run pytest with coverage and JSON reporting
-3. **Parse**: Extract metrics (total tests, passed/failed, duration, coverage)
-4. **Upload**: Send test results to SAInapse API endpoint
-5. **Report**: Display dashboard URL for viewing results
+2. **Test**: Run pytest, radon, bandit, pylint for comprehensive quality analysis
+3. **Parse**: Extract metrics (tests, coverage, maintainability, complexity, security, style)
+4. **Dual Upload**:
+   - **QA Nexus**: Store raw metrics in S3 for historical tracking
+   - **Dev Intelligence**: Send to LLM for AI-enhanced analysis (when JIRA issue detected)
+5. **PR Comment**: Post comprehensive quality report with AI insights
 
 ### Required Secrets
 
@@ -89,11 +91,68 @@ All functions have comprehensive unit tests with edge cases.
 
 ## 📈 Metrics Tracked
 
+### Test Metrics
 - **Total Tests**: Number of test cases executed
 - **Pass Rate**: Percentage of tests passing
 - **Failures**: Count and details of failed tests
 - **Duration**: Test execution time in seconds
-- **Coverage**: Code coverage percentage
+- **Coverage**: Code coverage percentage with branch/line details
+
+### Code Quality Metrics
+- **Maintainability Index**: Radon MI score (0-100, higher is better)
+- **Cyclomatic Complexity**: Average complexity per function
+- **Security Issues**: Bandit scan results (high/medium/low severity)
+- **Code Style**: Pylint score (0-10, higher is better)
+- **Overall Rating**: Weighted quality score (0-100)
+
+## 🤖 AI-Enhanced Analysis
+
+When your branch name contains a JIRA issue key (e.g., `feature/ALP-123-login`), the workflow automatically:
+
+1. ✅ Uploads metrics to **QA Nexus** for data lake storage
+2. 🤖 Sends metrics to **Dev Intelligence** with a custom LLM prompt
+3. 📊 Receives AI-generated analysis covering:
+   - **Production Readiness**: Risk assessment for merging
+   - **Critical Issues**: Top 2-3 problems that need immediate attention
+   - **Recommended Actions**: Prioritized, specific improvements
+   - **Positive Aspects**: What's working well to maintain
+4. 💬 Posts comprehensive report on PR with both metrics and AI insights
+
+### Example AI Analysis
+
+```
+## 🟢 SAInapse Quality Analysis Results
+
+### 📊 Overall Rating: **85.3/100**
+
+| Metric | Value | Status |
+|--------|-------|--------|
+| 🧪 Tests | 18/18 passed | ✅ |
+| 📈 Coverage | 92.5% | ✅ |
+| 🔧 Maintainability | 78/100 | ✅ |
+| 🔄 Complexity | 3.2 | ✅ |
+| 🔒 Security | 0 issues | ✅ |
+| ✨ Code Style | 8.7/10 | ✅ |
+
+---
+
+### 🤖 AI-Enhanced Analysis
+
+**Overall Assessment:** This code is production-ready with excellent test coverage and low complexity. The maintainability score is solid, and no security issues were detected. Risk level: LOW.
+
+**Positive Aspects:** 
+- Comprehensive test suite with 100% pass rate
+- High code coverage (92.5%) indicates thorough testing
+- Low cyclomatic complexity makes the code easy to understand and maintain
+
+**Recommended Actions:**
+1. Consider adding a few more edge case tests to reach 95%+ coverage
+2. Review the remaining pylint suggestions for minor style improvements
+
+---
+
+🔗 [View detailed results in SAInapse Dashboard →](https://sainapse.com/projects/ALP/quality)
+```
 
 ## 🔗 Integration Details
 
