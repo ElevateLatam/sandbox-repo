@@ -397,11 +397,11 @@ jobs:
           echo "📋 Agent Request:"
           cat agent-request.json | jq '.'
           
-          # Call Dev Intelligence Agent
+          # Call Dev Intelligence Enhanced Analysis endpoint
           echo ""
-          echo "📡 Calling Dev Intelligence Agent..."
+          echo "📡 Calling Dev Intelligence Enhanced Analysis..."
           RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-            "$SAINAPSE_API_URL/api/dev-intelligence/agent/run" \
+            "$SAINAPSE_API_URL/api/dev-intelligence/analyze" \
             -H "Content-Type: application/json" \
             -d @agent-request.json)
           

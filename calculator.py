@@ -22,6 +22,7 @@ def divide(a: int, b: int) -> float:
         raise ValueError("Cannot divide by zero")
     return a / b
 
+## new function
 
 def power(base: int, exponent: int) -> int:
     """Raise base to the power of exponent."""
