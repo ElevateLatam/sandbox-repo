@@ -204,56 +204,65 @@ jobs:
         run: |
           echo "📦 Building comprehensive test results payload..."
           
-          # Build comprehensive test results with all quality metrics
-          jq -n \
-            --arg total "${{ steps.metrics.outputs.total_tests }}" \
-            --arg passed "${{ steps.metrics.outputs.passed }}" \
-            --arg failed "${{ steps.metrics.outputs.failed }}" \
-            --arg skipped "${{ steps.metrics.outputs.skipped }}" \
-            --arg duration "${{ steps.metrics.outputs.duration }}" \
-            --arg coverage "${{ steps.metrics.outputs.coverage }}" \
-            --arg lines_covered "${{ steps.metrics.outputs.lines_covered }}" \
-            --arg lines_total "${{ steps.metrics.outputs.lines_total }}" \
-            --arg branches_covered "${{ steps.metrics.outputs.branches_covered }}" \
-            --arg branches_total "${{ steps.metrics.outputs.branches_total }}" \
-            --arg mi "${{ steps.metrics.outputs.maintainability_index }}" \
-            --arg complexity "${{ steps.metrics.outputs.avg_complexity }}" \
-            --arg complexity_norm "${{ steps.metrics.outputs.complexity_norm }}" \
-            --arg security_total "${{ steps.metrics.outputs.security_issues }}" \
-            --arg security_high "${{ steps.metrics.outputs.security_high }}" \
-            --arg security_medium "${{ steps.metrics.outputs.security_medium }}" \
-            --arg security_low "${{ steps.metrics.outputs.security_low }}" \
-            --arg security_score "${{ steps.metrics.outputs.security_score }}" \
-            --arg pylint "${{ steps.metrics.outputs.pylint_score }}" \
-            --arg rating "${{ steps.metrics.outputs.quality_rating }}" \
-            '{
-              total_tests: ($total | tonumber),
-              passed: ($passed | tonumber),
-              failed: ($failed | tonumber),
-              skipped: ($skipped | tonumber),
-              duration_seconds: ($duration | tonumber),
-              coverage_percent: ($coverage | tonumber),
-              coverage_details: {
-                lines_covered: ($lines_covered | tonumber),
-                lines_total: ($lines_total | tonumber),
-                branches_covered: ($branches_covered | tonumber),
-                branches_total: ($branches_total | tonumber)
-              },
-              code_quality: {
-                maintainability_index: ($mi | tonumber),
-                cyclomatic_complexity: ($complexity | tonumber),
-                complexity_norm: ($complexity_norm | tonumber),
-                security_issues: ($security_total | tonumber),
-                security_high: ($security_high | tonumber),
-                security_medium: ($security_medium | tonumber),
-                security_low: ($security_low | tonumber),
-                security_score: ($security_score | tonumber),
-                pylint_score: ($pylint | tonumber),
-                overall_rating: ($rating | tonumber)
-              }
-            }' > test-results-payload.json
+          # Get values with defaults
+          TOTAL="${{ steps.metrics.outputs.total_tests }}"
+          PASSED="${{ steps.metrics.outputs.passed }}"
+          FAILED="${{ steps.metrics.outputs.failed }}"
+          SKIPPED="${{ steps.metrics.outputs.skipped }}"
+          DURATION="${{ steps.metrics.outputs.duration }}"
+          COVERAGE="${{ steps.metrics.outputs.coverage }}"
+          LINES_COVERED="${{ steps.metrics.outputs.lines_covered }}"
+          LINES_TOTAL="${{ steps.metrics.outputs.lines_total }}"
+          BRANCHES_COVERED="${{ steps.metrics.outputs.branches_covered }}"
+          BRANCHES_TOTAL="${{ steps.metrics.outputs.branches_total }}"
+          MI="${{ steps.metrics.outputs.maintainability_index }}"
+          COMPLEXITY="${{ steps.metrics.outputs.avg_complexity }}"
+          COMPLEXITY_NORM="${{ steps.metrics.outputs.complexity_norm }}"
+          SECURITY_TOTAL="${{ steps.metrics.outputs.security_issues }}"
+          SECURITY_HIGH="${{ steps.metrics.outputs.security_high }}"
+          SECURITY_MEDIUM="${{ steps.metrics.outputs.security_medium }}"
+          SECURITY_LOW="${{ steps.metrics.outputs.security_low }}"
+          SECURITY_SCORE="${{ steps.metrics.outputs.security_score }}"
+          PYLINT="${{ steps.metrics.outputs.pylint_score }}"
+          RATING="${{ steps.metrics.outputs.quality_rating }}"
           
-          # Store in output as single line
+          # Build JSON with safe defaults
+          cat > test-results-payload.json <<EOF
+          {
+            "total_tests": ${TOTAL:-0},
+            "passed": ${PASSED:-0},
+            "failed": ${FAILED:-0},
+            "skipped": ${SKIPPED:-0},
+            "duration_seconds": ${DURATION:-0},
+            "coverage_percent": ${COVERAGE:-0},
+            "coverage_details": {
+              "lines_covered": ${LINES_COVERED:-0},
+              "lines_total": ${LINES_TOTAL:-0},
+              "branches_covered": ${BRANCHES_COVERED:-0},
+              "branches_total": ${BRANCHES_TOTAL:-0}
+            },
+            "code_quality": {
+              "maintainability_index": ${MI:-0},
+              "cyclomatic_complexity": ${COMPLEXITY:-0},
+              "complexity_norm": ${COMPLEXITY_NORM:-0},
+              "security_issues": ${SECURITY_TOTAL:-0},
+              "security_high": ${SECURITY_HIGH:-0},
+              "security_medium": ${SECURITY_MEDIUM:-0},
+              "security_low": ${SECURITY_LOW:-0},
+              "security_score": ${SECURITY_SCORE:-100},
+              "pylint_score": ${PYLINT:-0},
+              "overall_rating": ${RATING:-0}
+            }
+          }
+          EOF
+          
+          # Validate JSON
+          if ! jq empty test-results-payload.json 2>/dev/null; then
+            echo "❌ Invalid JSON generated, using minimal payload"
+            echo '{"total_tests":0,"passed":0,"failed":0,"skipped":0,"duration_seconds":0,"coverage_percent":0}' > test-results-payload.json
+          fi
+          
+          cat test-results-payload.json
           echo "payload=$(cat test-results-payload.json | jq -c)" >> $GITHUB_OUTPUT
       
       - name: Upload to SAInapse QA Nexus
@@ -261,24 +270,28 @@ jobs:
         run: |
           echo "📤 Uploading comprehensive results to SAInapse QA Nexus..."
           
-          # Read the payload from file and build full request
-          TEST_RESULTS=$(cat test-results-payload.json)
+          # Extract PR number and issue key
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          BRANCH_NAME="${{ github.head_ref || github.ref_name }}"
+          ISSUE_KEY=$(echo "$BRANCH_NAME" | grep -oE '([A-Z]+-[0-9]+)' | head -1)
           
-          # Build full payload for QA Nexus
+          # Build full payload for QA Nexus using jq with file input
           jq -n \
             --arg project_id "$SAINAPSE_PROJECT_ID" \
             --arg repo "${{ github.repository }}" \
-            --arg branch "${{ github.ref_name }}" \
-            --arg pr "${{ github.event.pull_request.number }}" \
+            --arg branch "$BRANCH_NAME" \
+            --arg pr "$PR_NUMBER" \
+            --arg issue "$ISSUE_KEY" \
             --arg sha "${{ github.sha }}" \
-            --argjson results "$TEST_RESULTS" \
+            --slurpfile results test-results-payload.json \
             '{
               project_id: $project_id,
               repository: $repo,
               branch: $branch,
               pr_number: (if $pr != "" then ($pr | tonumber) else null end),
+              issue_key: (if $issue != "" then $issue else null end),
               commit_sha: $sha,
-              test_results_file: ($results | tostring),
+              test_results_file: ($results[0] | tostring),
               test_format: "pytest-comprehensive"
             }' > sainapse-payload.json
           
