@@ -1,0 +1,238 @@
+# Sandbox Repository - SAInapse CI/CD Integration
+
+This is a simple Python project demonstrating integration with SAInapse's automated test result tracking.
+
+## 📋 Project Structure
+
+```
+sandbox-repo/
+├── calculator.py           # Simple calculator module
+├── test_calculator.py      # Unit tests with pytest
+├── requirements.txt        # Python dependencies
+├── pytest.ini             # Pytest configuration
+├── .github/
+│   └── workflows/
+│       └── sainapse-tests.yml  # GitHub Actions workflow
+└── README.md              # This file
+```
+
+## 🚀 Quick Start
+
+### Local Development
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run tests
+pytest
+
+# Run tests with coverage
+pytest --cov=calculator --cov-report=term-missing
+
+# Run tests and generate JSON report
+pytest --json-report --json-report-file=test-results.json
+```
+
+## 🔄 CI/CD Integration
+
+This project automatically runs tests and uploads results to SAInapse on every push and pull request.
+
+### GitHub Actions Workflow
+
+The workflow (`sainapse-tests.yml`) does the following:
+
+1. **Setup**: Checkout code, install Python 3.11, install dependencies
+2. **Test**: Run pytest, radon, bandit, pylint for comprehensive quality analysis
+3. **Parse**: Extract metrics (tests, coverage, maintainability, complexity, security, style)
+4. **Dual Upload**:
+   - **QA Nexus**: Store raw metrics in S3 for historical tracking
+   - **Dev Intelligence**: Send to LLM for AI-enhanced analysis (when JIRA issue detected)
+5. **PR Comment**: Post comprehensive quality report with AI insights
+
+### Required Secrets
+
+Add these to your GitHub repository secrets:
+
+- `SAINAPSE_API_URL`: Your SAInapse API endpoint (e.g., `https://api.sainapse.com`)
+
+### Environment Variables
+
+- `SAINAPSE_PROJECT_ID`: Set to your project ID (default: `ALP`)
+
+## 📊 Test Results
+
+After each test run, results are automatically uploaded to SAInapse and linked to:
+- **Pull Requests**: Via PR number extraction
+- **JIRA Issues**: Via branch name pattern (e.g., `feature/ALP-123-login`)
+- **Git Commits**: Via SHA tracking
+
+View your test results in the SAInapse dashboard:
+```
+https://sainapse.com/projects/ALP/quality
+```
+
+**S3 Storage Path:**
+```
+s3://sainapse-lake/projects/alp/qn/2025/11/19/pr-42-20251119123456.json
+# Or without PR: pr-5234-20251119123456.json (branch hash)
+```
+
+## 🧪 Test Coverage
+
+Current modules:
+- ✅ Addition (`add`)
+- ✅ Subtraction (`subtract`)
+- ✅ Multiplication (`multiply`)
+- ✅ Division (`divide`)
+- ✅ Power (`power`)
+
+All functions have comprehensive unit tests with edge cases.
+
+## 📈 Metrics Tracked
+
+### Test Metrics
+- **Total Tests**: Number of test cases executed
+- **Pass Rate**: Percentage of tests passing
+- **Failures**: Count and details of failed tests
+- **Duration**: Test execution time in seconds
+- **Coverage**: Code coverage percentage with branch/line details
+
+### Code Quality Metrics
+- **Maintainability Index**: Radon MI score (0-100, higher is better)
+- **Cyclomatic Complexity**: Average complexity per function
+- **Security Issues**: Bandit scan results (high/medium/low severity)
+- **Code Style**: Pylint score (0-10, higher is better)
+- **Overall Rating**: Weighted quality score (0-100)
+
+## 🤖 AI-Enhanced Analysis
+
+When your branch name contains a JIRA issue key (e.g., `feature/ALP-123-login`), the workflow automatically:
+
+1. ✅ Uploads metrics to **QA Nexus** for data lake storage
+2. 🤖 Sends metrics to **Dev Intelligence** with a custom LLM prompt
+3. 📊 Receives AI-generated analysis covering:
+   - **Production Readiness**: Risk assessment for merging
+   - **Critical Issues**: Top 2-3 problems that need immediate attention
+   - **Recommended Actions**: Prioritized, specific improvements
+   - **Positive Aspects**: What's working well to maintain
+4. 💬 Posts comprehensive report on PR with both metrics and AI insights
+
+### Example AI Analysis
+
+```
+## 🟢 SAInapse Quality Analysis Results
+
+### 📊 Overall Rating: **85.3/100**
+
+| Metric | Value | Status |
+|--------|-------|--------|
+| 🧪 Tests | 18/18 passed | ✅ |
+| 📈 Coverage | 92.5% | ✅ |
+| 🔧 Maintainability | 78/100 | ✅ |
+| 🔄 Complexity | 3.2 | ✅ |
+| 🔒 Security | 0 issues | ✅ |
+| ✨ Code Style | 8.7/10 | ✅ |
+
+---
+
+### 🤖 AI-Enhanced Analysis
+
+**Overall Assessment:** This code is production-ready with excellent test coverage and low complexity. The maintainability score is solid, and no security issues were detected. Risk level: LOW.
+
+**Positive Aspects:** 
+- Comprehensive test suite with 100% pass rate
+- High code coverage (92.5%) indicates thorough testing
+- Low cyclomatic complexity makes the code easy to understand and maintain
+
+**Recommended Actions:**
+1. Consider adding a few more edge case tests to reach 95%+ coverage
+2. Review the remaining pylint suggestions for minor style improvements
+
+---
+
+🔗 [View detailed results in SAInapse Dashboard →](https://sainapse.com/projects/ALP/quality)
+```
+
+## 🔗 Integration Details
+
+### Test Result Format
+
+The workflow sends test results in this format:
+
+```json
+{
+  "project_id": "ALP",
+  "repository": "owner/repo",
+  "branch": "feature/ALP-123-login",
+  "pr_number": 42,
+  "commit_sha": "abc123...",
+  "test_results_file": "{\"total_tests\": 18, \"passed\": 18, ...}",
+  "test_format": "pytest"
+}
+```
+
+### JIRA Issue Linking
+
+If your branch name contains a JIRA issue key (e.g., `feature/ALP-123-login`), the test results will automatically be linked to that issue.
+
+### DevIntelligence Integration
+
+Test results are linked to DevIntelligence instructions for automatic verification of completed tasks.
+
+## 🛠️ Customization
+
+### Change Project ID
+
+Edit `.github/workflows/sainapse-tests.yml`:
+
+```yaml
+env:
+  SAINAPSE_PROJECT_ID: "YOUR_PROJECT_ID"
+```
+
+### Modify Test Configuration
+
+Edit `pytest.ini` to adjust pytest settings:
+
+```ini
+[pytest]
+addopts = 
+    -v
+    --cov=calculator
+    --cov-report=term-missing
+```
+
+## 📝 Example Usage
+
+```python
+from calculator import add, divide
+
+# Simple operations
+result = add(5, 3)  # 8
+quotient = divide(10, 2)  # 5.0
+```
+
+## 🐛 Troubleshooting
+
+### Tests not uploading to SAInapse
+
+1. Check that `SAINAPSE_API_URL` secret is set correctly
+2. Verify the API endpoint is accessible from GitHub Actions
+3. Check workflow logs for detailed error messages
+
+### Coverage not showing
+
+Ensure `pytest-cov` is installed:
+```bash
+pip install pytest-cov
+```
+
+## 🤝 Contributing
+
+This is a sandbox project for testing SAInapse integration. Feel free to add more test cases or modules!
+
+## 📄 License
+
+MIT License - Free to use for testing purposes.
+

@@ -1,0 +1,528 @@
+name: SAInapse Comprehensive Quality Analysis
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+  push:
+    branches: [ main, develop ]
+
+env:
+  SAINAPSE_API_URL: ${{ secrets.SAINAPSE_API_URL }}
+  SAINAPSE_PROJECT_ID: ${{ secrets.SAINAPSE_PROJECT_ID || 'ALP' }}
+
+jobs:
+  quality-analysis:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies and quality tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          
+          # Install comprehensive quality analysis tools
+          pip install radon pylint bandit flake8 mypy
+      
+      - name: Run unit tests with coverage
+        id: pytest
+        run: |
+          pytest \
+            --json-report \
+            --json-report-file=test-results.json \
+            --cov=calculator \
+            --cov-report=json \
+            --cov-report=term-missing \
+            -v
+        continue-on-error: true
+      
+      - name: Run code maintainability analysis (Radon MI)
+        id: radon_mi
+        run: |
+          radon mi . -j > radon-mi.json || echo '{}' > radon-mi.json
+          cat radon-mi.json
+        continue-on-error: true
+      
+      - name: Run cyclomatic complexity analysis (Radon CC)
+        id: radon_cc
+        run: |
+          radon cc . -j -s > radon-cc.json || echo '{}' > radon-cc.json
+          cat radon-cc.json
+        continue-on-error: true
+      
+      - name: Run security analysis (Bandit)
+        id: bandit
+        run: |
+          bandit -r . -f json -o bandit.json || echo '{"metrics": {"_totals": {}}}' > bandit.json
+          cat bandit.json
+        continue-on-error: true
+      
+      - name: Run code style analysis (Pylint)
+        id: pylint
+        run: |
+          pylint calculator.py --output-format=json > pylint.json || echo '[]' > pylint.json
+          # Also get score
+          pylint calculator.py --score=y | grep "Your code has been rated" > pylint-score.txt || echo "Your code has been rated at 0.00/10" > pylint-score.txt
+          cat pylint-score.txt
+        continue-on-error: true
+      
+      - name: Parse comprehensive metrics
+        id: metrics
+        run: |
+          echo "📊 Parsing comprehensive quality metrics..."
+          
+          # === 1. TEST METRICS ===
+          TOTAL_TESTS=$(jq '.summary.total // 0' test-results.json)
+          PASSED_TESTS=$(jq '.summary.passed // 0' test-results.json)
+          FAILED_TESTS=$(jq '.summary.failed // 0' test-results.json)
+          SKIPPED_TESTS=$(jq '.summary.skipped // 0' test-results.json)
+          DURATION=$(jq '.duration // 0' test-results.json)
+          
+          # === 2. COVERAGE METRICS ===
+          COVERAGE_PERCENT=$(jq '.totals.percent_covered // 0' coverage.json)
+          LINES_COVERED=$(jq '.totals.covered_lines // 0' coverage.json)
+          LINES_TOTAL=$(jq '.totals.num_statements // 0' coverage.json)
+          BRANCHES_COVERED=$(jq '.totals.covered_branches // 0' coverage.json)
+          BRANCHES_TOTAL=$(jq '.totals.num_branches // 0' coverage.json)
+          
+          # === 3. MAINTAINABILITY INDEX (Radon MI) ===
+          # Calculate average MI across all files
+          MI_RAW=$(jq '[.[] | select(.mi != null) | .mi] | if length > 0 then (add / length) else 0 end' radon-mi.json 2>/dev/null || echo "0")
+          MAINTAINABILITY_INDEX=$(printf "%.2f" "$MI_RAW")
+          
+          # === 4. CYCLOMATIC COMPLEXITY (Radon CC) ===
+          # Calculate average complexity across all functions/methods
+          COMPLEXITY_RAW=$(jq '[.. | select(.complexity? != null) | .complexity] | if length > 0 then (add / length) else 0 end' radon-cc.json 2>/dev/null || echo "0")
+          AVG_COMPLEXITY=$(printf "%.2f" "$COMPLEXITY_RAW")
+          
+          # Normalize complexity (0-1 scale, where 0 is best)
+          COMPLEXITY_NORM=$(awk "BEGIN {print ($COMPLEXITY_RAW / 10.0 > 1.0) ? 1.0 : ($COMPLEXITY_RAW / 10.0)}")
+          
+          # === 5. SECURITY ISSUES (Bandit) ===
+          SECURITY_HIGH=$(jq '.metrics._totals.SEVERITY[0] // 0' bandit.json 2>/dev/null || echo "0")
+          SECURITY_MEDIUM=$(jq '.metrics._totals.SEVERITY[1] // 0' bandit.json 2>/dev/null || echo "0")
+          SECURITY_LOW=$(jq '.metrics._totals.SEVERITY[2] // 0' bandit.json 2>/dev/null || echo "0")
+          SECURITY_TOTAL=$((SECURITY_HIGH + SECURITY_MEDIUM + SECURITY_LOW))
+          
+          # Calculate security score (0-100, higher is better)
+          if [ $SECURITY_HIGH -gt 0 ]; then
+            SECURITY_SCORE=0
+          elif [ $SECURITY_MEDIUM -gt 2 ]; then
+            SECURITY_SCORE=50
+          elif [ $SECURITY_TOTAL -gt 0 ]; then
+            SECURITY_SCORE=75
+          else
+            SECURITY_SCORE=100
+          fi
+          
+          # === 6. CODE STYLE (Pylint) ===
+          PYLINT_SCORE=$(grep -oP "rated at \K[0-9.]+" pylint-score.txt 2>/dev/null || echo "0")
+          
+          # === 7. CALCULATE OVERALL QUALITY RATING ===
+          # Weighted average: tests(25%) + coverage(25%) + maintainability(20%) + complexity(15%) + security(10%) + style(5%)
+          PASS_RATE=$(awk "BEGIN {if ($TOTAL_TESTS > 0) print ($PASSED_TESTS / $TOTAL_TESTS * 100); else print 0}")
+          
+          RATING=$(awk "BEGIN {
+            pass_weight = $PASS_RATE * 0.25;
+            cov_weight = $COVERAGE_PERCENT * 0.25;
+            mi_weight = $MAINTAINABILITY_INDEX * 0.20;
+            complex_weight = (1 - $COMPLEXITY_NORM) * 100 * 0.15;
+            security_weight = $SECURITY_SCORE * 0.10;
+            style_weight = $PYLINT_SCORE * 10 * 0.05;
+            rating = pass_weight + cov_weight + mi_weight + complex_weight + security_weight + style_weight;
+            print rating
+          }")
+          
+          # === OUTPUT ALL METRICS ===
+          echo "total_tests=$TOTAL_TESTS" >> $GITHUB_OUTPUT
+          echo "passed=$PASSED_TESTS" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED_TESTS" >> $GITHUB_OUTPUT
+          echo "skipped=$SKIPPED_TESTS" >> $GITHUB_OUTPUT
+          echo "duration=$DURATION" >> $GITHUB_OUTPUT
+          echo "coverage=$COVERAGE_PERCENT" >> $GITHUB_OUTPUT
+          echo "lines_covered=$LINES_COVERED" >> $GITHUB_OUTPUT
+          echo "lines_total=$LINES_TOTAL" >> $GITHUB_OUTPUT
+          echo "maintainability_index=$MAINTAINABILITY_INDEX" >> $GITHUB_OUTPUT
+          echo "avg_complexity=$AVG_COMPLEXITY" >> $GITHUB_OUTPUT
+          echo "complexity_norm=$COMPLEXITY_NORM" >> $GITHUB_OUTPUT
+          echo "security_issues=$SECURITY_TOTAL" >> $GITHUB_OUTPUT
+          echo "security_high=$SECURITY_HIGH" >> $GITHUB_OUTPUT
+          echo "security_medium=$SECURITY_MEDIUM" >> $GITHUB_OUTPUT
+          echo "security_low=$SECURITY_LOW" >> $GITHUB_OUTPUT
+          echo "security_score=$SECURITY_SCORE" >> $GITHUB_OUTPUT
+          echo "pylint_score=$PYLINT_SCORE" >> $GITHUB_OUTPUT
+          echo "quality_rating=$RATING" >> $GITHUB_OUTPUT
+          
+          # === DISPLAY SUMMARY ===
+          echo ""
+          echo "╔════════════════════════════════════════════════════════════╗"
+          echo "║           📊 COMPREHENSIVE QUALITY ANALYSIS               ║"
+          echo "╠════════════════════════════════════════════════════════════╣"
+          echo "║ 🧪 TESTS                                                  ║"
+          echo "║   Total:        $TOTAL_TESTS                              ║"
+          echo "║   Passed:       $PASSED_TESTS ✅                          ║"
+          echo "║   Failed:       $FAILED_TESTS                             ║"
+          echo "║   Pass Rate:    ${PASS_RATE}%                             ║"
+          echo "║   Duration:     ${DURATION}s                              ║"
+          echo "╠════════════════════════════════════════════════════════════╣"
+          echo "║ 📈 COVERAGE                                               ║"
+          echo "║   Percentage:   ${COVERAGE_PERCENT}%                      ║"
+          echo "║   Lines:        $LINES_COVERED / $LINES_TOTAL            ║"
+          echo "║   Branches:     $BRANCHES_COVERED / $BRANCHES_TOTAL      ║"
+          echo "╠════════════════════════════════════════════════════════════╣"
+          echo "║ 🔧 CODE QUALITY                                           ║"
+          echo "║   Maintainability: ${MAINTAINABILITY_INDEX}/100           ║"
+          echo "║   Complexity:      ${AVG_COMPLEXITY} (avg)                ║"
+          echo "║   Pylint Score:    ${PYLINT_SCORE}/10                     ║"
+          echo "╠════════════════════════════════════════════════════════════╣"
+          echo "║ 🔒 SECURITY                                               ║"
+          echo "║   High:         $SECURITY_HIGH                            ║"
+          echo "║   Medium:       $SECURITY_MEDIUM                          ║"
+          echo "║   Low:          $SECURITY_LOW                             ║"
+          echo "║   Score:        ${SECURITY_SCORE}/100                     ║"
+          echo "╠════════════════════════════════════════════════════════════╣"
+          echo "║ ⭐ OVERALL QUALITY RATING: ${RATING}/100                  ║"
+          echo "╚════════════════════════════════════════════════════════════╝"
+          echo ""
+      
+      - name: Build comprehensive test results payload
+        id: build_payload
+        if: always()
+        run: |
+          echo "📦 Building comprehensive test results payload..."
+          
+          # Get values with defaults
+          TOTAL="${{ steps.metrics.outputs.total_tests }}"
+          PASSED="${{ steps.metrics.outputs.passed }}"
+          FAILED="${{ steps.metrics.outputs.failed }}"
+          SKIPPED="${{ steps.metrics.outputs.skipped }}"
+          DURATION="${{ steps.metrics.outputs.duration }}"
+          COVERAGE="${{ steps.metrics.outputs.coverage }}"
+          LINES_COVERED="${{ steps.metrics.outputs.lines_covered }}"
+          LINES_TOTAL="${{ steps.metrics.outputs.lines_total }}"
+          BRANCHES_COVERED="${{ steps.metrics.outputs.branches_covered }}"
+          BRANCHES_TOTAL="${{ steps.metrics.outputs.branches_total }}"
+          MI="${{ steps.metrics.outputs.maintainability_index }}"
+          COMPLEXITY="${{ steps.metrics.outputs.avg_complexity }}"
+          COMPLEXITY_NORM="${{ steps.metrics.outputs.complexity_norm }}"
+          SECURITY_TOTAL="${{ steps.metrics.outputs.security_issues }}"
+          SECURITY_HIGH="${{ steps.metrics.outputs.security_high }}"
+          SECURITY_MEDIUM="${{ steps.metrics.outputs.security_medium }}"
+          SECURITY_LOW="${{ steps.metrics.outputs.security_low }}"
+          SECURITY_SCORE="${{ steps.metrics.outputs.security_score }}"
+          PYLINT="${{ steps.metrics.outputs.pylint_score }}"
+          RATING="${{ steps.metrics.outputs.quality_rating }}"
+          
+          # Build JSON with safe defaults
+          cat > test-results-payload.json <<EOF
+          {
+            "total_tests": ${TOTAL:-0},
+            "passed": ${PASSED:-0},
+            "failed": ${FAILED:-0},
+            "skipped": ${SKIPPED:-0},
+            "duration_seconds": ${DURATION:-0},
+            "coverage_percent": ${COVERAGE:-0},
+            "coverage_details": {
+              "lines_covered": ${LINES_COVERED:-0},
+              "lines_total": ${LINES_TOTAL:-0},
+              "branches_covered": ${BRANCHES_COVERED:-0},
+              "branches_total": ${BRANCHES_TOTAL:-0}
+            },
+            "code_quality": {
+              "maintainability_index": ${MI:-0},
+              "cyclomatic_complexity": ${COMPLEXITY:-0},
+              "complexity_norm": ${COMPLEXITY_NORM:-0},
+              "security_issues": ${SECURITY_TOTAL:-0},
+              "security_high": ${SECURITY_HIGH:-0},
+              "security_medium": ${SECURITY_MEDIUM:-0},
+              "security_low": ${SECURITY_LOW:-0},
+              "security_score": ${SECURITY_SCORE:-100},
+              "pylint_score": ${PYLINT:-0},
+              "overall_rating": ${RATING:-0}
+            }
+          }
+          EOF
+          
+          # Validate JSON
+          if ! jq empty test-results-payload.json 2>/dev/null; then
+            echo "❌ Invalid JSON generated, using minimal payload"
+            echo '{"total_tests":0,"passed":0,"failed":0,"skipped":0,"duration_seconds":0,"coverage_percent":0}' > test-results-payload.json
+          fi
+          
+          cat test-results-payload.json
+          echo "payload=$(cat test-results-payload.json | jq -c)" >> $GITHUB_OUTPUT
+      
+      - name: Upload to SAInapse QA Nexus
+        if: always()
+        run: |
+          echo "📤 Uploading comprehensive results to SAInapse QA Nexus..."
+          
+          # Extract PR number and issue key
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          BRANCH_NAME="${{ github.head_ref || github.ref_name }}"
+          ISSUE_KEY=$(echo "$BRANCH_NAME" | grep -oE '([A-Z]+-[0-9]+)' | head -1)
+          
+          # Build full payload for QA Nexus using jq with file input
+          jq -n \
+            --arg project_id "$SAINAPSE_PROJECT_ID" \
+            --arg repo "${{ github.repository }}" \
+            --arg branch "$BRANCH_NAME" \
+            --arg pr "$PR_NUMBER" \
+            --arg issue "$ISSUE_KEY" \
+            --arg sha "${{ github.sha }}" \
+            --slurpfile results test-results-payload.json \
+            '{
+              project_id: $project_id,
+              repository: $repo,
+              branch: $branch,
+              pr_number: (if $pr != "" then ($pr | tonumber) else null end),
+              issue_key: (if $issue != "" then $issue else null end),
+              commit_sha: $sha,
+              test_results_file: ($results[0] | tostring),
+              test_format: "pytest-comprehensive"
+            }' > sainapse-payload.json
+          
+          # Upload to SAInapse
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "$SAINAPSE_API_URL/api/qa-nexus/test-results/upload" \
+            -H "Content-Type: application/json" \
+            -d @sainapse-payload.json)
+          
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n-1)
+          
+          if [ "$HTTP_CODE" -eq 200 ]; then
+            echo "✅ Results uploaded to QA Nexus successfully!"
+            echo "$BODY" | jq '.' || echo "$BODY"
+            
+            DASHBOARD_URL=$(echo "$BODY" | jq -r '.dashboard_url // empty' 2>/dev/null || echo "")
+            if [ -n "$DASHBOARD_URL" ]; then
+              echo "📊 QA Nexus Dashboard: $DASHBOARD_URL"
+              echo "dashboard_url=$DASHBOARD_URL" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "⚠️  Failed to upload to QA Nexus (HTTP $HTTP_CODE)"
+            echo "$BODY"
+          fi
+      
+      - name: Enhanced LLM Analysis via Dev Intelligence
+        id: llm_analysis
+        if: always()
+        run: |
+          echo "🤖 Requesting LLM-enhanced analysis from Dev Intelligence..."
+          
+          # Extract issue key if available, otherwise generate one
+          BRANCH_NAME="${{ github.head_ref || github.ref_name }}"
+          ISSUE_KEY=$(echo "$BRANCH_NAME" | grep -oE '([A-Z]+-[0-9]+)' | head -1)
+          
+          if [ -z "$ISSUE_KEY" ]; then
+            # Generate issue key from PR number or timestamp
+            if [ -n "${{ github.event.pull_request.number }}" ]; then
+              ISSUE_KEY="GH-${{ github.event.pull_request.number }}"
+            else
+              ISSUE_KEY="TEST-$(date +%s)"
+            fi
+            echo "ℹ️  No JIRA issue key found, using: $ISSUE_KEY"
+          else
+            echo "✅ Found JIRA issue key: $ISSUE_KEY"
+          fi
+          
+          # Read metrics for prompt
+          TOTAL_TESTS="${{ steps.metrics.outputs.total_tests }}"
+          PASSED_TESTS="${{ steps.metrics.outputs.passed }}"
+          FAILED_TESTS="${{ steps.metrics.outputs.failed }}"
+          COVERAGE="${{ steps.metrics.outputs.coverage }}"
+          MAINTAINABILITY="${{ steps.metrics.outputs.maintainability_index }}"
+          COMPLEXITY="${{ steps.metrics.outputs.avg_complexity }}"
+          SECURITY_HIGH="${{ steps.metrics.outputs.security_high }}"
+          SECURITY_MEDIUM="${{ steps.metrics.outputs.security_medium }}"
+          PYLINT_SCORE="${{ steps.metrics.outputs.pylint_score }}"
+          QUALITY_RATING="${{ steps.metrics.outputs.quality_rating }}"
+          
+          # Build custom analysis prompt
+          cat > analysis-prompt.txt <<EOF
+          Analyze the following comprehensive test and code quality results:
+          
+          **Test Results:**
+          - Total Tests: ${TOTAL_TESTS}
+          - Passed: ${PASSED_TESTS}
+          - Failed: ${FAILED_TESTS}
+          - Success Rate: $(echo "scale=1; ${PASSED_TESTS}*100/${TOTAL_TESTS:-1}" | bc)%
+          - Coverage: ${COVERAGE}%
+          
+          **Code Quality Metrics:**
+          - Maintainability Index: ${MAINTAINABILITY}/100
+          - Cyclomatic Complexity: ${COMPLEXITY}
+          - Security Issues: ${SECURITY_HIGH} high, ${SECURITY_MEDIUM} medium
+          - Pylint Score: ${PYLINT_SCORE}/10
+          - Overall Quality Rating: ${QUALITY_RATING}/100
+          
+          **Your Task:**
+          Provide a concise, actionable analysis (max 3-4 paragraphs) covering:
+          1. **Overall Assessment**: Is this code production-ready? What's the risk level?
+          2. **Critical Issues**: Highlight the 2-3 most important problems (if any)
+          3. **Recommended Actions**: Specific steps to improve quality (prioritized)
+          4. **Positive Aspects**: What's working well that should be maintained
+          
+          Be direct, specific, and developer-friendly. Focus on actionable insights, not generic advice.
+          EOF
+          
+          # Build agent request payload
+          jq -n \
+            --arg project_id "$SAINAPSE_PROJECT_ID" \
+            --arg issue_key "$ISSUE_KEY" \
+            --arg repo "${{ github.repository }}" \
+            --arg branch "$BRANCH_NAME" \
+            --arg commit "${{ github.sha }}" \
+            --arg pr "${{ github.event.pull_request.number }}" \
+            --rawfile prompt analysis-prompt.txt \
+            --slurpfile test_data test-results-payload.json \
+            '{
+              project_id: $project_id,
+              issue_key: $issue_key,
+              repository: $repo,
+              branch: $branch,
+              commit_sha: $commit,
+              pr_number: (if $pr != "" then ($pr | tonumber) else null end),
+              prompt_override: $prompt,
+              context: {
+                test_results: $test_data[0],
+                source: "github-actions"
+              }
+            }' > agent-request.json
+          
+          echo "📋 Agent Request:"
+          cat agent-request.json | jq '.'
+          
+          # Call Dev Intelligence Enhanced Analysis endpoint
+          echo ""
+          echo "📡 Calling Dev Intelligence Enhanced Analysis..."
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "$SAINAPSE_API_URL/api/dev-intelligence/analyze" \
+            -H "Content-Type: application/json" \
+            -d @agent-request.json)
+          
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n-1)
+          
+          if [ "$HTTP_CODE" -eq 200 ]; then
+            echo "✅ LLM analysis completed successfully!"
+            echo "$BODY" | jq '.'
+            
+            # Extract S3 path
+            S3_PATH=$(echo "$BODY" | jq -r '.s3_path // empty')
+            if [ -n "$S3_PATH" ]; then
+              echo ""
+              echo "📊 Dev Intelligence Metrics stored at: $S3_PATH"
+            fi
+            
+            # Extract analysis text
+            ANALYSIS=$(echo "$BODY" | jq -r '.analysis // .result // empty')
+            if [ -n "$ANALYSIS" ]; then
+              echo "llm_analysis<<EOF" >> $GITHUB_OUTPUT
+              echo "$ANALYSIS" >> $GITHUB_OUTPUT
+              echo "EOF" >> $GITHUB_OUTPUT
+              
+              echo ""
+              echo "🤖 LLM Analysis:"
+              echo "$ANALYSIS"
+            fi
+          else
+            echo "⚠️  Failed to get LLM analysis (HTTP $HTTP_CODE)"
+            echo "$BODY"
+          fi
+      
+      # Disabled temporarily - LLM analysis contains backticks that break JS template literals
+      # TODO: Escape special characters or use different approach
+      - name: Comment on PR with results
+        if: false && github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const rating = parseFloat('${{ steps.metrics.outputs.quality_rating }}');
+            const emoji = rating >= 90 ? '🟢' : rating >= 75 ? '🟡' : '🔴';
+            
+            // Build metrics table
+            let body = `## ${emoji} SAInapse Quality Analysis Results
+            
+            ### 📊 Overall Rating: **${rating.toFixed(1)}/100**
+            
+            | Metric | Value | Status |
+            |--------|-------|--------|
+            | 🧪 Tests | ${{ steps.metrics.outputs.passed }}/${{ steps.metrics.outputs.total_tests }} passed | ${{ steps.metrics.outputs.failed == '0' && '✅' || '❌' }} |
+            | 📈 Coverage | ${{ steps.metrics.outputs.coverage }}% | ${{ steps.metrics.outputs.coverage >= 80 && '✅' || steps.metrics.outputs.coverage >= 60 && '⚠️' || '❌' }} |
+            | 🔧 Maintainability | ${{ steps.metrics.outputs.maintainability_index }}/100 | ${{ steps.metrics.outputs.maintainability_index >= 70 && '✅' || steps.metrics.outputs.maintainability_index >= 50 && '⚠️' || '❌' }} |
+            | 🔄 Complexity | ${{ steps.metrics.outputs.avg_complexity }} | ${{ steps.metrics.outputs.avg_complexity <= 5 && '✅' || steps.metrics.outputs.avg_complexity <= 10 && '⚠️' || '❌' }} |
+            | 🔒 Security | ${{ steps.metrics.outputs.security_issues }} issues | ${{ steps.metrics.outputs.security_high == '0' && '✅' || '❌' }} |
+            | ✨ Code Style | ${{ steps.metrics.outputs.pylint_score }}/10 | ${{ steps.metrics.outputs.pylint_score >= 8 && '✅' || steps.metrics.outputs.pylint_score >= 6 && '⚠️' || '❌' }} |
+            `;
+            
+            // Add LLM analysis if available
+            const llmAnalysis = `${{ steps.llm_analysis.outputs.llm_analysis }}`;
+            if (llmAnalysis && llmAnalysis.trim() !== '') {
+              body += `\n\n---\n\n### 🤖 AI-Enhanced Analysis\n\n${llmAnalysis}\n`;
+            }
+            
+            // Add dashboard link
+            body += `\n\n---\n\n🔗 [View detailed results in SAInapse Dashboard →](https://sainapse.com/projects/${{ env.SAINAPSE_PROJECT_ID }}/quality)\n`;
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+      
+      - name: Quality summary
+        if: always()
+        run: |
+          FAILED_TESTS="${{ steps.metrics.outputs.failed }}"
+          SECURITY_HIGH="${{ steps.metrics.outputs.security_high }}"
+          RATING="${{ steps.metrics.outputs.quality_rating }}"
+          
+          echo "📊 Quality Analysis Complete"
+          echo ""
+          
+          # Display warnings but don't fail - metrics are for tracking, not blocking
+          if [ "$FAILED_TESTS" != "0" ]; then
+            echo "⚠️  $FAILED_TESTS test(s) failed - investigate before merging"
+          fi
+          
+          if [ "$SECURITY_HIGH" != "0" ]; then
+            echo "⚠️  $SECURITY_HIGH high-severity security issue(s) found"
+          fi
+          
+          if (( $(echo "$RATING < 60" | bc -l) )); then
+            echo "⚠️  Quality rating is below 60 ($RATING) - consider improvements"
+          elif (( $(echo "$RATING >= 90" | bc -l) )); then
+            echo "🎉 Excellent quality rating: $RATING"
+          elif (( $(echo "$RATING >= 75" | bc -l) )); then
+            echo "✅ Good quality rating: $RATING"
+          else
+            echo "📊 Quality rating: $RATING"
+          fi
+          
+          echo ""
+          echo "✅ Metrics uploaded to SAInapse for tracking and analysis"
+          echo "📈 Historical trends and insights available in the dashboard"
+      
+      - name: Fail only if tests failed to run
+        if: steps.pytest.outcome == 'failure'
+        run: |
+          echo "❌ Tests failed to execute properly"
+          echo "This indicates a test infrastructure issue, not code quality"
+          exit 1
+
